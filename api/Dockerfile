@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:22-alpine AS coach
 WORKDIR /app
 
 # ── AI Coach runtimes ─────────────────────────────────────────────────────────
@@ -19,8 +19,22 @@ RUN npm ci --omit=dev --include=optional \
  && npm cache clean --force \
  && node -e "import('@anthropic-ai/claude-agent-sdk').then(() => console.log('Claude Agent SDK ready'))" \
  && ./node_modules/.bin/codex --version
-COPY server.js ./
+COPY server.js security-policy.js snapshot.js ./
 COPY coach/ ./coach/
 ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["node", "server.js"]
+
+# Default production target: the workout/passkey service only. It does not contain the Coach
+# source tree, agent CLIs, bubblewrap, or their transitive dependencies. COACH_DISABLED is set
+# in the image as a second fail-closed layer in addition to the Kubernetes environment.
+FROM node:22-alpine AS core
+WORKDIR /app
+COPY core/package.json core/package-lock.json ./
+RUN npm ci --omit=dev \
+ && npm cache clean --force
+COPY server.js security-policy.js snapshot.js ./
+ENV NODE_ENV=production COACH_DISABLED=1
+USER node
 EXPOSE 3000
 CMD ["node", "server.js"]

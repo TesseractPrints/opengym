@@ -9,12 +9,19 @@
 # module-resolution errors.
 FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /app
+ARG VITE_EXERCISE_MEDIA=disabled
+ARG VITE_SOURCE_URL=https://github.com/TesseractPrints/opengym
+ENV VITE_EXERCISE_MEDIA=$VITE_EXERCISE_MEDIA
+ENV VITE_SOURCE_URL=$VITE_SOURCE_URL
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci 2>/dev/null || npm install
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginxinc/nginx-unprivileged:alpine
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-# exercise media (img/gif) is mounted at runtime from the media volume
+USER 101
+EXPOSE 8080
+ENTRYPOINT ["nginx"]
+CMD ["-g", "daemon off;"]

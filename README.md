@@ -110,10 +110,10 @@ docker compose pull   # grab prebuilt images (amd64 + arm64) — skip to build f
 docker compose up -d
 ```
 
-Open **http://localhost:8080**, tap **Create profile**, and you're in. First launch downloads
-the exercise media (~140 MB) once. Prefer building the images yourself instead of pulling from
-`ghcr.io`? Drop the `pull` step and run `docker compose up -d --build` — you don't need Node or
-a build step locally either way.
+Open **http://localhost:8080**, tap **Create profile**, and you're in. This fork is text-only by
+default: it neither ships nor downloads the separately licensed exercise images/GIFs. Prefer
+building the images yourself instead of pulling from `ghcr.io`? Drop the `pull` step and run
+`docker compose up -d --build` — you don't need Node locally either way.
 
 > Want it reachable from your phone over the internet with passkeys? You'll need an HTTPS
 > domain — a two-line change in `.env`. See **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
@@ -198,7 +198,7 @@ Rough, community-driven — ideas and PRs welcome:
 ## Tech
 
 React 19 + Vite (React Router, Zustand) · Node (no framework) · nginx · Docker Compose ·
-WebAuthn · exercise data from [hasaneyldrm/exercises-dataset](https://github.com/hasaneyldrm/exercises-dataset).
+WebAuthn · exercise text/data derived from [hasaneyldrm/exercises-dataset](https://github.com/hasaneyldrm/exercises-dataset).
 No database server, no cloud dependencies — the frontend builds inside Docker, so self-hosting
 stays a one-command `docker compose up`.
 
@@ -234,4 +234,4 @@ top of the page is there — a star, a bug report or a PR is worth just as much.
 if you run a modified version as a network service, you must offer that version's source under
 the same license. Nobody can turn openGym into a closed, proprietary product.
 
-Exercise images/GIFs are fetched from the upstream dataset and keep their own terms — see [NOTICE.md](NOTICE.md).
+Exercise images/GIFs are intentionally not fetched or included — see [NOTICE.md](NOTICE.md).

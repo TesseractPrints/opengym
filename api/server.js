@@ -9,10 +9,23 @@ import {
   generateAuthenticationOptions, verifyAuthenticationResponse
 } from '@simplewebauthn/server';
 import webpush from 'web-push';
-import * as coachConfig from './coach/config.js';
-import * as coachJobs from './coach/jobs.js';
-import { coachRoutes } from './coach/routes.js';
-import { startCadence } from './coach/cadence.js';
+import { bootstrapStillAvailable, mutationOriginAllowed, registrationAccess } from './security-policy.js';
+import { createSnapshot, isBackupAuthorized } from './snapshot.js';
+
+// The production core image does not contain agent runtimes or even the Coach source tree.
+// Load that optional surface only in an explicitly Coach-enabled image; the environment kill
+// switch therefore removes both routes and background execution before module evaluation.
+const COACH_DISABLED_BY_ENV = /^(1|true|yes|on)$/i.test(process.env.COACH_DISABLED || '');
+let coachConfig = { publicConfig: () => null };
+let coachJobs = { recoverOnBoot: () => {}, setProposalHook: () => {} };
+let coachRoutes = () => ({});
+let startCadence = () => {};
+if (!COACH_DISABLED_BY_ENV) {
+  coachConfig = await import('./coach/config.js');
+  coachJobs = await import('./coach/jobs.js');
+  ({ coachRoutes } = await import('./coach/routes.js'));
+  ({ startCadence } = await import('./coach/cadence.js'));
+}
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -29,6 +42,7 @@ const INVITE_ONLY = /^(1|true|yes|on)$/i.test(process.env.INVITE_ONLY || '');
 // baked into each cookie when it's issued, so lowering this never cuts an existing session short.
 const SESSION_DAYS = Math.max(1, +(process.env.SESSION_DAYS || 90) || 90);
 const MAX_BODY = 5 * 1024 * 1024;
+const BACKUP_TOKEN_FILE = process.env.BACKUP_TOKEN_FILE || '';
 // Secure cookies require HTTPS; over plain http://localhost the flag would drop the cookie
 const SECURE = /^https:/i.test(ORIGIN) ? ' Secure;' : '';
 
@@ -38,6 +52,16 @@ fs.mkdirSync(DATA, { recursive: true });
 // its job payload in a temp directory and nothing else. Best-effort: a bind-mounted host directory
 // may refuse the chmod, and that is not a reason to refuse to boot.
 try { fs.chmodSync(DATA, 0o700); } catch { /* host filesystem says no — carry on */ }
+
+let BACKUP_TOKEN = '';
+if (BACKUP_TOKEN_FILE) {
+  if (!fs.existsSync(BACKUP_TOKEN_FILE))
+    fs.writeFileSync(BACKUP_TOKEN_FILE, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
+  BACKUP_TOKEN = fs.readFileSync(BACKUP_TOKEN_FILE, 'utf8').trim();
+  if (BACKUP_TOKEN.length < 32) throw new Error('BACKUP_TOKEN_FILE must contain at least 32 characters');
+  if ((fs.statSync(BACKUP_TOKEN_FILE).mode & 0o077) !== 0)
+    throw new Error('BACKUP_TOKEN_FILE must not be readable by group or others');
+}
 
 /* ---------- secret + db ---------- */
 const secretFile = path.join(DATA, 'secret');
@@ -208,9 +232,9 @@ function requireAdmin(req, res) {
   return user;
 }
 function sessionCookie(user) {
-  return `gymsid=${makeSession(user)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
+  return `gymsid=${makeSession(user)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Strict`;
 }
-const clearCookie = `gymsid=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
+const clearCookie = `gymsid=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Strict`;
 
 /* ---------- challenge store (in-memory, 5 min TTL) ---------- */
 const challenges = new Map(); // cid -> {challenge, name?, uid?, exp}
@@ -265,7 +289,16 @@ setInterval(() => { for (const [k, v] of presence) if (Date.now() - v.updatedAt 
 
 /* ---------- routes ---------- */
 const routes = {
-  'GET /api/health': async (req, res) => json(res, 200, { ok: true, users: db.users.length }),
+  'GET /api/health': async (req, res) => json(res, 200, { ok: true }),
+
+  'GET /api/internal/backup': async (req, res) => {
+    if (!BACKUP_TOKEN) return json(res, 404, { error: 'not found' });
+    if (!isBackupAuthorized(req.headers.authorization, BACKUP_TOKEN))
+      return json(res, 401, { error: 'unauthorized' });
+    // Snapshot reads are synchronous in the same Node process that owns every state write.
+    // No mutation callback can interleave, so this is one coherent application-level view.
+    json(res, 200, createSnapshot(DATA, new Date(), { exclude: [BACKUP_TOKEN_FILE] }));
+  },
 
   // Public config the login screen needs before anyone is signed in. `coach` is absent unless
   // the instance has both switched the Coach on and successfully connected a provider — the
@@ -273,7 +306,7 @@ const routes = {
   // the app it was before the feature existed.
   'GET /api/config': async (req, res) => {
     const coach = coachConfig.publicConfig();
-    json(res, 200, { invite_only: INVITE_ONLY, ...(coach ? { coach } : {}) });
+    json(res, 200, { invite_only: INVITE_ONLY && db.users.length > 0, ...(coach ? { coach } : {}) });
   },
 
   'GET /api/me': async (req, res) => {
@@ -287,7 +320,9 @@ const routes = {
     const name = String(body.name || '').trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
     const code = String(body.code || '').trim().toUpperCase();
-    if (INVITE_ONLY && !db.invites.some(i => i.code === code && !i.usedBy && !i.revoked))
+    const validInvite = db.invites.some(i => i.code === code && !i.usedBy && !i.revoked);
+    const access = registrationAccess({ inviteOnly: INVITE_ONLY, userCount: db.users.length, validInvite });
+    if (!access.allowed)
       return json(res, 403, { error: 'a valid invite code is required' });
     const uid = crypto.randomBytes(12).toString('base64url');
     const options = await generateRegistrationOptions({
@@ -297,7 +332,7 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = putChallenge({ challenge: options.challenge, name, uid, code });
+    const cid = putChallenge({ challenge: options.challenge, name, uid, code, bootstrapAdmin: access.bootstrapAdmin });
     json(res, 200, { cid, options });
   },
 
@@ -321,10 +356,16 @@ const routes = {
     // Re-check the invite at the last moment (it may have been used/revoked since options), then burn it.
     let invite = null;
     if (INVITE_ONLY) {
-      invite = db.invites.find(i => i.code === c.code && !i.usedBy && !i.revoked);
-      if (!invite) return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
+      if (c.bootstrapAdmin) {
+        if (!bootstrapStillAvailable(true, db.users.length))
+          return json(res, 409, { error: 'the first profile already exists — ask it for an invite' });
+      } else {
+        invite = db.invites.find(i => i.code === c.code && !i.usedBy && !i.revoked);
+        if (!invite) return json(res, 403, { error: 'invite code is no longer valid — ask for a new one' });
+      }
     }
     const user = { id: c.uid, name: c.name, created: new Date().toISOString() };
+    if (c.bootstrapAdmin) user.admin = true;
     if (invite) { user.invitedBy = invite.code; invite.usedBy = user.id; invite.usedAt = user.created; }
     db.users.push(user);
     db.creds.push({
@@ -582,7 +623,9 @@ coachJobs.setProposalHook((uid, pending) => {
 });
 startCadence({ users: () => db.users, userNow });
 
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
+  if (!mutationOriginAllowed(req.method, req.headers.origin, ORIGIN))
+    return json(res, 403, { error: 'origin not allowed' });
   const url = new URL(req.url, 'http://x');
   const key = req.method + ' ' + url.pathname;
   const handler = routes[key];
@@ -592,4 +635,17 @@ http.createServer(async (req, res) => {
     console.error(key, e);
     if (!res.headersSent) json(res, 500, { error: 'server error' });
   }
-}).listen(PORT, () => console.log(`gym-api on :${PORT} (rpID=${RP_ID}, origin=${ORIGIN})`));
+});
+
+server.listen(PORT, () => console.log(`gym-api on :${PORT} (rpID=${RP_ID}, origin=${ORIGIN})`));
+
+let shutdownStarted = false;
+function shutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log(`${signal}: closing gym-api`);
+  server.close(error => process.exit(error ? 1 : 0));
+  setTimeout(() => process.exit(1), 8000).unref();
+}
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
