@@ -1,6 +1,6 @@
-/* openGym service worker — runtime caching (works with Vite's hashed asset names).
-   Media (img/gif) cache-first; everything else network-first with offline fallback. */
-const CACHE = 'opengym-rt-v1'
+/* openGym service worker — network-first runtime caching with offline fallback.
+   Exercise media is deliberately absent from this build and has no special cache path. */
+const CACHE = 'opengym-rt-v2'
 
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', e => {
@@ -31,15 +31,8 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || url.origin !== location.origin) return
   if (url.pathname.startsWith('/api/')) return    // never cache auth/data
 
-  const isMedia = url.pathname.includes('/img/') || url.pathname.includes('/gif/')
-  if (isMedia) {
-    e.respondWith(caches.open(CACHE).then(c => c.match(e.request).then(hit =>
-      hit || fetch(e.request).then(res => { if (res.ok) c.put(e.request, res.clone()); return res })
-    )))
-  } else {
-    e.respondWith(fetch(e.request).then(res => {
-      if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()))
-      return res
-    }).catch(() => caches.match(e.request).then(hit => hit || caches.match('index.html'))))
-  }
+  e.respondWith(fetch(e.request).then(res => {
+    if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()))
+    return res
+  }).catch(() => caches.match(e.request).then(hit => hit || caches.match('index.html'))))
 })

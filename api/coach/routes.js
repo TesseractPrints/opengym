@@ -19,14 +19,22 @@ const USER_ERROR = {
   consent: 'the Coach needs your go-ahead first'
 };
 const HTTP_FOR = { off: 503, busy: 409, cap: 429, consent: 403 };
+const DISABLED_ERROR = 'the Coach is disabled on this instance';
 
-export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
+export function coachRoutes({ json, readBody, readSession, requireAdmin }, { disabledByEnv = cfgStore.COACH_DISABLED } = {}) {
   /** Every user route starts the same way: signed in, feature on, feature reachable. */
   const guard = (req, res) => {
     const user = readSession(req);
     if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
+    if (disabledByEnv) { json(res, 503, { error: DISABLED_ERROR }); return null; }
     if (!cfgStore.isEnabled() || !cfgStore.isConnected()) { json(res, 503, { error: USER_ERROR.off }); return null; }
     return user;
+  };
+  const coachAdmin = (req, res) => {
+    const admin = requireAdmin(req, res);
+    if (!admin) return null;
+    if (disabledByEnv) { json(res, 503, { error: DISABLED_ERROR }); return null; }
+    return admin;
   };
   const failEnqueue = (res, e) => {
     if (e instanceof jobs.CoachError) return json(res, HTTP_FOR[e.code] || 400, { error: USER_ERROR[e.code] || e.message, code: e.code });
@@ -39,6 +47,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     // What the consent screen has to disclose, straight from the module that builds payloads,
     // so the screen cannot drift from what actually leaves (FR-09).
     'GET /api/coach/disclosure': async (req, res) => {
+      if (disabledByEnv) return json(res, 503, { error: DISABLED_ERROR });
       const cfg = cfgStore.load();
       json(res, 200, {
         provider: cfg.provider,
@@ -98,6 +107,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
 
     'GET /api/admin/coach': async (req, res) => {
       if (!requireAdmin(req, res)) return;
+      if (disabledByEnv) return json(res, 200, { disabledByEnv: true, enabled: false });
       const cfg = cfgStore.load();
       const adapter = adapterFor(cfg.provider);
       const check = adapter ? await adapter.check(cfg, cfgStore.jobEnv(process.env.TMPDIR || '/tmp')) : { ok: false, error: 'unknown provider' };
@@ -121,7 +131,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'POST /api/admin/coach/config': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       const body = await readBody(req);
       const patch = {};
       if (body.enabled !== undefined) patch.enabled = !!body.enabled;
@@ -143,13 +153,13 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'POST /api/admin/coach/test': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       const r = await jobs.testRun();
       json(res, 200, r);
     },
 
     'POST /api/admin/coach/auth/setup-token': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       const body = await readBody(req);
       try {
         oauth.setSetupToken(body.token);
@@ -162,19 +172,19 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     // local CLI, relays the short-lived instructions to the signed-in admin, and later checks
     // whether Codex created its own private auth cache.
     'POST /api/admin/coach/auth/chatgpt/device': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       const body = await readBody(req);
       try { json(res, 200, oauth.startCodexDeviceLogin({ replace: !!body.replace })); }
       catch (e) { json(res, 400, { error: e.message }); }
     },
 
     'GET /api/admin/coach/auth/chatgpt/status': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       json(res, 200, oauth.codexDeviceLoginStatus());
     },
 
     'POST /api/admin/coach/auth/key': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       const body = await readBody(req);
       try {
         oauth.setApiKey(body.key);
@@ -184,7 +194,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'POST /api/admin/coach/auth/disconnect': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!coachAdmin(req, res)) return;
       try {
         await oauth.disconnect();
         json(res, 200, { ok: true });

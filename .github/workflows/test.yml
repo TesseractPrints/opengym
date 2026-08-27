@@ -7,6 +7,8 @@ on:
     paths:
       - 'frontend/**'
       - 'api/**'
+      - 'web/**'
+      - 'docker-compose.yml'
       - 'scripts/build-coach-library.mjs'
       - '.github/workflows/test.yml'
   push:
@@ -14,6 +16,8 @@ on:
     paths:
       - 'frontend/**'
       - 'api/**'
+      - 'web/**'
+      - 'docker-compose.yml'
       - 'scripts/build-coach-library.mjs'
       - '.github/workflows/test.yml'
   workflow_dispatch:
@@ -35,10 +39,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            frontend/package-lock.json
+            api/package-lock.json
+      - run: npm ci
+        working-directory: api
       - run: npm ci
         working-directory: frontend
       - run: npm test
+        working-directory: frontend
+      - run: npm audit --omit=dev --audit-level=high
         working-directory: frontend
       # A broken import or bad JSX fails the build long before any test covers it.
       - run: npm run build
@@ -53,9 +63,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      # No dependencies to install: the Coach tests run on node:test and drive the in-repo
-      # fixture provider, so the whole job graph works without an AI account or a network.
+      - run: npm ci
+        working-directory: api
       - run: npm test
+        working-directory: api
+      - run: npm audit --omit=dev --audit-level=high
         working-directory: api
       # The API's copy of the exercise catalogue is generated and committed. A dataset change
       # that forgets to regenerate it would otherwise only surface as "the Coach can't find

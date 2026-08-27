@@ -15,7 +15,7 @@ docker compose pull   # prebuilt images from ghcr.io (amd64 + arm64) — or skip
 docker compose up -d
 ```
 
-- First start downloads the exercise images/GIFs (~140 MB) once into `app/img` and `app/gif`.
+- The default build is text-only and never downloads the separately licensed exercise media.
 - Open **http://localhost:8080** and create a profile with a passkey.
 - Rather build from source than pull prebuilt images? Skip `docker compose pull` and run
   `docker compose up -d --build` instead — no Node needed locally either way.

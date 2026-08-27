@@ -59,11 +59,12 @@ SOFTWARE.
 
 ## Exercise data & media
 
-The exercise names, instructions (English in `frontend/src/lib/exercises-data.js`, other
-languages in `frontend/src/instr/`, regenerated via `scripts/build-instructions.mjs`), images
-and animations (fetched into `media/` at build time) come from
+The exercise names and instructions (English in `frontend/src/lib/exercises-data.js`, other
+languages in `frontend/src/instr/`, regenerated via `scripts/build-instructions.mjs`) come from
 [**hasaneyldrm/exercises-dataset**](https://github.com/hasaneyldrm/exercises-dataset)
-and are **not** covered by openGym's AGPL license — they remain under that dataset's own terms.
-The media files are not distributed in this repository; they are downloaded from the upstream
-source on first run. If you redistribute openGym with the media included, review the upstream
-license first.
+and remain under that dataset's own terms rather than openGym's AGPL license.
+
+Exercise images and animations are separately licensed by Gym Visual. This fork does not
+distribute, download, hotlink, or request them in its default builds. Set
+`VITE_EXERCISE_MEDIA=licensed` only when you have obtained rights to the corresponding assets
+and provide those files yourself.
