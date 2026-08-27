@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { unprivilegedIds } from './adapters/spawn.js';
+import { atomicWrite, readPrivateFile } from '../storage.js';
 
 const DATA = process.env.DATA_DIR || '/data';
 const FILE = path.join(DATA, 'coach.json');
@@ -51,7 +52,7 @@ let keyCache = null;
 function key() {
   if (keyCache) return keyCache;
   // Read the secret lazily: server.js creates it at boot, and this module may be imported first.
-  const secret = fs.readFileSync(path.join(DATA, 'secret'), 'utf8').trim();
+  const secret = readPrivateFile(path.join(DATA, 'secret')).trim();
   keyCache = Buffer.from(crypto.hkdfSync('sha256', Buffer.from(secret, 'utf8'), Buffer.alloc(0), Buffer.from('opengym-coach-v1'), 32));
   return keyCache;
 }
@@ -73,15 +74,14 @@ export function decrypt(blob) {
 /* ---------- load / save ---------- */
 
 let cache = null;
-function atomicWrite(file, content, mode) {
-  const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, content, mode ? { mode } : undefined);
-  fs.renameSync(tmp, file);
-}
 export function load() {
   if (cache) return cache;
   let stored = {};
-  try { stored = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch { /* absent = feature off */ }
+  try {
+    stored = JSON.parse(readPrivateFile(FILE));
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+  }
   const { customCommand: _customCommand, ...storedWithoutCustomCommand } = stored;
   cache = { ...DEFAULTS, ...storedWithoutCustomCommand, caps: { ...DEFAULTS.caps, ...(stored.caps || {}) } };
   // A retired provider must not leave the admin page in a state where no chip is selected, or
@@ -95,7 +95,7 @@ export function load() {
 export function save(patch) {
   const next = { ...load(), ...patch };
   cache = next;
-  atomicWrite(FILE, JSON.stringify(next, null, 2), 0o600);
+  atomicWrite(FILE, JSON.stringify(next, null, 2));
   return next;
 }
 // Test seam: forget the in-memory copy so the next load() re-reads from disk.
@@ -118,11 +118,13 @@ export function ensureCodexHome() {
   }
   const configFile = path.join(dir, 'config.toml');
   let existing = null;
-  try { existing = fs.readFileSync(configFile, 'utf8'); } catch { /* write the managed file below */ }
+  try {
+    existing = readPrivateFile(configFile);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   if (existing !== COACH_CODEX_CONFIG) {
-    const tmp = configFile + '.tmp';
-    fs.writeFileSync(tmp, COACH_CODEX_CONFIG, { mode: 0o600 });
-    fs.renameSync(tmp, configFile);
+    atomicWrite(configFile, COACH_CODEX_CONFIG);
   }
   try { fs.chmodSync(configFile, 0o600); } catch { /* bind-mounted host path may reject chmod */ }
   if (ids) {

@@ -30,6 +30,42 @@ test('snapshot refuses symlinks instead of following data outside the volume', (
   assert.throws(() => createSnapshot(dir), /symlink/);
 });
 
+test('snapshot fails closed when a checked file is replaced before reading', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opengym-snapshot-'));
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opengym-outside-'));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  });
+
+  const file = path.join(root, 'db.json');
+  const outside = path.join(outsideRoot, 'secret');
+  fs.writeFileSync(file, '{"safe":true}', { mode: 0o600 });
+  fs.writeFileSync(outside, 'OUTSIDE-SECRET', { mode: 0o600 });
+  const originalLstatSync = fs.lstatSync;
+  let replaced = false;
+  fs.lstatSync = target => {
+    const stat = originalLstatSync(target);
+    if (target === file && !replaced) {
+      replaced = true;
+      fs.unlinkSync(file);
+      fs.symlinkSync(outside, file);
+    }
+    return stat;
+  };
+
+  try {
+    assert.throws(
+      () => createSnapshot(root),
+      /changed during snapshot|refuses symlink/
+    );
+  } finally {
+    fs.lstatSync = originalLstatSync;
+  }
+  assert.equal(replaced, true);
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE-SECRET');
+});
+
 test('backup authorization is exact and timing-safe compatible', () => {
   const token = 'a'.repeat(64);
   assert.equal(isBackupAuthorized('Bearer ' + token, token), true);

@@ -38,6 +38,26 @@ test('a review job produces a validated, applyable proposal', async () => {
   assert.ok(s.pending.expiresAt > Date.now());
 });
 
+test('Coach user state never follows a predictable temp symlink', async () => {
+  const uid = 'u-temp-symlink';
+  const coachDir = `${DIR}/coach`;
+  const outside = `${DIR}/outside-user-state`;
+  const planted = `${coachDir}/${uid}.json.tmp`;
+  fs.mkdirSync(coachDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(outside, 'outside', { mode: 0o600 });
+  fs.symlinkSync(outside, planted);
+  writeState(DIR, uid, sampleState());
+
+  try {
+    jobs.enqueue(uid, { kind: 'review' });
+    await settle(uid);
+  } finally {
+    try { fs.unlinkSync(planted); } catch {}
+  }
+
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
+});
+
 test('a creation job produces a plan bundle in the app\'s own share format', async () => {
   const uid = 'u-create';
   writeState(DIR, uid, sampleState({ routines: [], week: {}, workouts: [] }));
@@ -158,7 +178,7 @@ test('a job interrupted by a restart is reported as failed, not left spinning', 
   fs.mkdirSync(`${DIR}/coach`, { recursive: true });
   fs.writeFileSync(`${DIR}/coach/${uid}.json`, JSON.stringify({
     current: { id: 'j1', kind: 'review', state: 'running', startedAt: Date.now() - 60000 }, history: []
-  }));
+  }), { mode: 0o600 });
   jobs.recoverOnBoot();
   assert.equal(jobs.status(uid).job, null);
   assert.equal(lastOutcome(uid).errorClass, 'restart');

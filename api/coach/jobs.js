@@ -20,6 +20,7 @@ import * as cfgStore from './config.js';
 import { adapterFor } from './adapters/index.js';
 import * as payloadLib from './payload.js';
 import { extractJSON, validatePlan, validateReview, contractOK } from './validate.js';
+import { atomicWrite, readPrivateFile } from '../storage.js';
 
 const DATA = process.env.DATA_DIR || '/data';
 const COACH_DIR = path.join(DATA, 'coach');
@@ -37,14 +38,15 @@ const userFile = uid => path.join(COACH_DIR, safe(uid) + '.json');
 const EMPTY = { daily: null, current: null, pending: null, history: [] };
 
 export function readUser(uid) {
-  try { return { ...EMPTY, ...JSON.parse(fs.readFileSync(userFile(uid), 'utf8')) }; }
-  catch { return { ...EMPTY }; }
+  try { return { ...EMPTY, ...JSON.parse(readPrivateFile(userFile(uid))) }; }
+  catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) return { ...EMPTY };
+    throw error;
+  }
 }
 function writeUser(uid, rec) {
   fs.mkdirSync(COACH_DIR, { recursive: true, mode: 0o700 });
-  const file = userFile(uid), tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(rec), { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  atomicWrite(userFile(uid), JSON.stringify(rec));
 }
 function patchUser(uid, patch) {
   const rec = { ...readUser(uid), ...patch };
@@ -57,8 +59,11 @@ export function clearUser(uid) {
 }
 
 export function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(path.join(DATA, 'state-' + safe(uid) + '.json'), 'utf8')); }
-  catch { return null; }
+  try { return JSON.parse(readPrivateFile(path.join(DATA, 'state-' + safe(uid) + '.json'))); }
+  catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+    throw error;
+  }
 }
 
 /* ---------- caps ---------- */

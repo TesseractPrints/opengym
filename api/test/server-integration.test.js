@@ -49,6 +49,10 @@ function waitForExit(child) {
 test('server enforces deployment authority and exits cleanly', async t => {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'opengym-server-test-'));
   const tokenFile = path.join(data, 'backup-token');
+  const dbFile = path.join(data, 'db.json');
+  fs.writeFileSync(dbFile, JSON.stringify({ users: [], creds: [], subs: [], invites: [] }), { mode: 0o644 });
+  fs.chmodSync(dbFile, 0o644);
+  assert.equal(fs.statSync(dbFile).mode & 0o777, 0o644);
   const port = await freePort();
   const origin = 'https://gym.test';
   const child = spawn(process.execPath, ['server.js'], {
@@ -73,6 +77,7 @@ test('server enforces deployment authority and exits cleanly', async t => {
   await waitForReady(child);
   const base = `http://127.0.0.1:${port}`;
 
+  assert.equal(fs.statSync(dbFile).mode & 0o777, 0o600);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
   assert.match(token, /^[0-9a-f]{64}$/);
   assert.equal(fs.statSync(tokenFile).mode & 0o777, 0o600);
@@ -111,9 +116,43 @@ test('server enforces deployment authority and exits cleanly', async t => {
   assert.equal(envelope.format, 'opengym-backup-v1');
   assert.ok(envelope.files.some(file => file.path === 'secret'));
   assert.ok(envelope.files.some(file => file.path === 'vapid.json'));
+  assert.equal(envelope.files.find(file => file.path === 'db.json').mode, 0o600);
   assert.ok(!envelope.files.some(file => file.path === 'backup-token'));
 
   const exited = waitForExit(child);
   child.kill('SIGTERM');
   assert.deepEqual(await exited, { code: 0, signal: null });
+});
+
+test('server refuses an external backup-token symlink before readiness', async t => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'opengym-server-test-'));
+  const credentials = fs.mkdtempSync(path.join(os.tmpdir(), 'opengym-credentials-test-'));
+  const target = path.join(credentials, 'target');
+  const tokenFile = path.join(credentials, 'backup-token');
+  fs.writeFileSync(target, 'x'.repeat(64), { mode: 0o600 });
+  fs.chmodSync(target, 0o600);
+  fs.symlinkSync(target, tokenFile);
+
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: path.resolve(import.meta.dirname, '..'),
+    env: {
+      ...process.env,
+      PORT: String(await freePort()),
+      DATA_DIR: data,
+      RP_ID: 'gym.test',
+      ORIGIN: 'https://gym.test',
+      INVITE_ONLY: '1',
+      COACH_DISABLED: '1',
+      BACKUP_TOKEN_FILE: tokenFile
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    fs.rmSync(data, { recursive: true, force: true });
+    fs.rmSync(credentials, { recursive: true, force: true });
+  });
+
+  await assert.rejects(waitForReady(child), /server exited before readiness/);
+  assert.notEqual(child.exitCode, 0);
 });

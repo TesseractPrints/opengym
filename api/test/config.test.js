@@ -16,6 +16,24 @@ test('an unconfigured instance offers nothing at all', () => {
   assert.equal(cfg.publicConfig(), null, 'no coach key in /api/config ⇒ no Coach UI anywhere');
 });
 
+test('Coach config save never follows a predictable temp symlink', () => {
+  const outside = `${DIR}/outside-coach-config`;
+  const planted = `${DIR}/coach.json.tmp`;
+  fs.writeFileSync(outside, 'outside', { mode: 0o600 });
+  fs.symlinkSync(outside, planted);
+  let outsideContent;
+  try {
+    cfg.save({ enabled: false });
+    outsideContent = fs.readFileSync(outside, 'utf8');
+  } finally {
+    try { fs.unlinkSync(planted); } catch {}
+    try {
+      if (fs.lstatSync(`${DIR}/coach.json`).isSymbolicLink()) fs.unlinkSync(`${DIR}/coach.json`);
+    } catch {}
+  }
+  assert.equal(outsideContent, 'outside');
+});
+
 test('a provider that is enabled but not signed in is still not offered', () => {
   cfg.save({ enabled: true, provider: 'claude' });
   assert.equal(cfg.isEnabled(), true);
@@ -92,6 +110,28 @@ test('Codex uses its own ChatGPT CLI cache and never receives an API key', () =>
   assert.equal(env.HOME, '/tmp/jobdir', 'the agent has no access to the persistent cache through HOME');
   fs.unlinkSync(cfg.codexAuthFile());
   assert.equal(cfg.isConnected(), false, 'a removed Codex cache fails closed');
+});
+
+test('managed Codex config never follows a predictable temp symlink', () => {
+  const dir = cfg.codexHome();
+  const configFile = `${dir}/config.toml`;
+  const planted = `${configFile}.tmp`;
+  const outside = `${DIR}/outside-codex-config`;
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.unlinkSync(configFile); } catch {}
+  fs.writeFileSync(outside, 'outside', { mode: 0o600 });
+  fs.symlinkSync(outside, planted);
+  let outsideContent;
+  try {
+    cfg.ensureCodexHome();
+    outsideContent = fs.readFileSync(outside, 'utf8');
+  } finally {
+    try { fs.unlinkSync(planted); } catch {}
+    try {
+      if (fs.lstatSync(configFile).isSymbolicLink()) fs.unlinkSync(configFile);
+    } catch {}
+  }
+  assert.equal(outsideContent, 'outside');
 });
 
 test('legacy Claude credentials are disabled until replaced with a setup token', () => {

@@ -2,6 +2,37 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+function readSnapshotFile(absolute, expected, relative) {
+  let fd;
+  try {
+    try {
+      fd = fs.openSync(
+        absolute,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NONBLOCK |
+          fs.constants.O_NOFOLLOW
+      );
+    } catch (error) {
+      if (error.code === 'ELOOP') {
+        throw new Error(`snapshot refuses symlink: ${relative}`, { cause: error });
+      }
+      throw error;
+    }
+
+    const actual = fs.fstatSync(fd);
+    if (!actual.isFile() || actual.dev !== expected.dev || actual.ino !== expected.ino) {
+      throw new Error(`file changed during snapshot: ${relative}`);
+    }
+    return { content: fs.readFileSync(fd), stat: actual };
+  } finally {
+    if (fd !== undefined) {
+      const snapshotFd = fd;
+      fd = undefined;
+      fs.closeSync(snapshotFd);
+    }
+  }
+}
+
 function snapshotFiles(root, directory, files, excluded) {
   for (const name of fs.readdirSync(directory).sort()) {
     if (name.endsWith('.tmp')) continue;
@@ -15,10 +46,10 @@ function snapshotFiles(root, directory, files, excluded) {
       continue;
     }
     if (!stat.isFile()) throw new Error(`snapshot refuses non-file: ${relative}`);
-    const content = fs.readFileSync(absolute);
+    const { content, stat: openedStat } = readSnapshotFile(absolute, stat, relative);
     files.push({
       path: relative,
-      mode: stat.mode & 0o777,
+      mode: openedStat.mode & 0o777,
       size: content.length,
       sha256: crypto.createHash('sha256').update(content).digest('hex'),
       data: content.toString('base64')
