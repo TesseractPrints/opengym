@@ -19,7 +19,7 @@ RUN npm ci --omit=dev --include=optional \
  && npm cache clean --force \
  && node -e "import('@anthropic-ai/claude-agent-sdk').then(() => console.log('Claude Agent SDK ready'))" \
  && ./node_modules/.bin/codex --version
-COPY server.js security-policy.js snapshot.js ./
+COPY server.js security-policy.js snapshot.js storage.js ./
 COPY coach/ ./coach/
 ENV NODE_ENV=production
 EXPOSE 3000
@@ -33,7 +33,7 @@ WORKDIR /app
 COPY core/package.json core/package-lock.json ./
 RUN npm ci --omit=dev \
  && npm cache clean --force
-COPY server.js security-policy.js snapshot.js ./
+COPY server.js security-policy.js snapshot.js storage.js ./
 ENV NODE_ENV=production COACH_DISABLED=1
 USER node
 EXPOSE 3000

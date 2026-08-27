@@ -11,6 +11,12 @@ import {
 import webpush from 'web-push';
 import { bootstrapStillAvailable, mutationOriginAllowed, registrationAccess } from './security-policy.js';
 import { createSnapshot, isBackupAuthorized } from './snapshot.js';
+import {
+  atomicWrite,
+  hardenDataTree,
+  readPrivateFile,
+  writePrivateFileExclusive,
+} from './storage.js';
 
 // The production core image does not contain agent runtimes or even the Coach source tree.
 // Load that optional surface only in an explicitly Coach-enabled image; the environment kill
@@ -46,50 +52,71 @@ const BACKUP_TOKEN_FILE = process.env.BACKUP_TOKEN_FILE || '';
 // Secure cookies require HTTPS; over plain http://localhost the flag would drop the cookie
 const SECURE = /^https:/i.test(ORIGIN) ? ' Secure;' : '';
 
-fs.mkdirSync(DATA, { recursive: true });
-// 0700 is what stops the unprivileged user that Coach jobs run as from reading any of this —
-// state files, db.json, the session secret, the provider credential. The Agent SDK process gets
-// its job payload in a temp directory and nothing else. Best-effort: a bind-mounted host directory
-// may refuse the chmod, and that is not a reason to refuse to boot.
-try { fs.chmodSync(DATA, 0o700); } catch { /* host filesystem says no — carry on */ }
+// Keep every persistent file owner-only. The startup pass also repairs files written by older
+// releases with the host's default umask; snapshots preserve these modes and restore refuses any
+// group/world-readable state rather than weakening the recovery boundary. Kubernetes owns the
+// PVC mountpoint itself, so preserve its fsGroup-managed mode while hardening app-owned entries.
+process.umask(0o077);
+fs.mkdirSync(DATA, { recursive: true, mode: 0o700 });
+hardenDataTree(DATA, { exclude: [BACKUP_TOKEN_FILE], preserveRoot: true });
 
 let BACKUP_TOKEN = '';
+function readOrCreatePrivateFile(file, createContent) {
+  try {
+    return readPrivateFile(file);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    const content = createContent();
+    writePrivateFileExclusive(file, content);
+    return content;
+  }
+}
+
 if (BACKUP_TOKEN_FILE) {
-  if (!fs.existsSync(BACKUP_TOKEN_FILE))
-    fs.writeFileSync(BACKUP_TOKEN_FILE, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
-  BACKUP_TOKEN = fs.readFileSync(BACKUP_TOKEN_FILE, 'utf8').trim();
+  BACKUP_TOKEN = readOrCreatePrivateFile(
+    BACKUP_TOKEN_FILE,
+    () => crypto.randomBytes(32).toString('hex')
+  ).trim();
   if (BACKUP_TOKEN.length < 32) throw new Error('BACKUP_TOKEN_FILE must contain at least 32 characters');
-  if ((fs.statSync(BACKUP_TOKEN_FILE).mode & 0o077) !== 0)
-    throw new Error('BACKUP_TOKEN_FILE must not be readable by group or others');
 }
 
 /* ---------- secret + db ---------- */
 const secretFile = path.join(DATA, 'secret');
-if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
-const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+const SECRET = readOrCreatePrivateFile(
+  secretFile,
+  () => crypto.randomBytes(32).toString('hex')
+).trim();
 
 const dbFile = path.join(DATA, 'db.json');
 let db = { users: [], creds: [], subs: [], invites: [] };
-try { db = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch {}
+try {
+  db = JSON.parse(readPrivateFile(dbFile));
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
 db.subs = db.subs || [];
 db.invites = db.invites || [];
 const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
 function saveDb() { atomicWrite(dbFile, JSON.stringify(db, null, 2)); }
-function atomicWrite(file, content) {
-  const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, content);
-  fs.renameSync(tmp, file);
-}
 const stateFile = uid => path.join(DATA, 'state-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
 function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(stateFile(uid), 'utf8')); } catch { return null; }
+  try { return JSON.parse(readPrivateFile(stateFile(uid))); }
+  catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 /* ---------- push notifications (Web Push / VAPID) ---------- */
 const vapidFile = path.join(DATA, 'vapid.json');
 let vapid;
-try { vapid = JSON.parse(fs.readFileSync(vapidFile, 'utf8')); }
-catch { vapid = webpush.generateVAPIDKeys(); fs.writeFileSync(vapidFile, JSON.stringify(vapid), { mode: 0o600 }); }
+try {
+  vapid = JSON.parse(readPrivateFile(vapidFile));
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+  vapid = webpush.generateVAPIDKeys();
+  writePrivateFileExclusive(vapidFile, JSON.stringify(vapid));
+}
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || (SECURE ? ORIGIN : 'mailto:admin@localhost');
 webpush.setVapidDetails(VAPID_SUBJECT, vapid.publicKey, vapid.privateKey);
 
@@ -434,10 +461,7 @@ const routes = {
   'GET /api/data': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    try {
-      const state = JSON.parse(fs.readFileSync(stateFile(user.id), 'utf8'));
-      json(res, 200, { state });
-    } catch { json(res, 200, { state: null }); }
+    json(res, 200, { state: readState(user.id) });
   },
 
   'PUT /api/data': async (req, res) => {

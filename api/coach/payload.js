@@ -11,9 +11,9 @@
  * and appearance settings, and every other profile's everything.
  */
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { readPrivateFile } from '../storage.js';
 
 const DATA = process.env.DATA_DIR || '/data';
 const require_ = createRequire(import.meta.url);
@@ -39,7 +39,7 @@ export const DATA_CATEGORIES = [
 
 /** Stable per-profile pseudonym. Never the uid, never reversible, same across jobs. */
 function handle(uid) {
-  const secret = fs.readFileSync(path.join(DATA, 'secret'), 'utf8').trim();
+  const secret = readPrivateFile(path.join(DATA, 'secret')).trim();
   return crypto.createHmac('sha256', secret).update('coach-handle:' + uid).digest('base64url').slice(0, 16);
 }
 

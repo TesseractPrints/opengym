@@ -17,7 +17,11 @@ export function tempData() {
 }
 
 export function writeState(dir, uid, S) {
-  fs.writeFileSync(path.join(dir, 'state-' + uid + '.json'), JSON.stringify(S));
+  fs.writeFileSync(
+    path.join(dir, 'state-' + uid + '.json'),
+    JSON.stringify(S),
+    { mode: 0o600 }
+  );
 }
 
 /** A profile that has consented and has some history — the usual starting point. */
